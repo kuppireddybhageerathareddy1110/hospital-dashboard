@@ -10,11 +10,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from pulp import LpMaximize, LpProblem, LpVariable
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.utils import to_categorical
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
 import warnings
 
 warnings.filterwarnings("ignore")
 
-st.title("Hospital Emergency Analytics Dashboard")
+st.title("🏥 Hospital Emergency Analytics Dashboard")
 
 # ----------------------
 # Upload Dataset
@@ -76,9 +81,9 @@ if uploaded_file:
     st.plotly_chart(fig_cluster)
 
     # ----------------------
-    # Admission Prediction Section
+    # ML: Admission Prediction Section
     # ----------------------
-    st.subheader("Predict Patient Admission")
+    st.subheader("ML: Predict Patient Admission")
 
     X_ml = df_filtered[['Age_Scaled', 'Waittime_Scaled', 'Gender_Encoded', 'Department_Encoded']]
     y_ml = df_filtered['Patient Admission Flag']
@@ -97,7 +102,7 @@ if uploaded_file:
         st.write("Not enough data in filtered selection for admission prediction.")
 
     # ----------------------
-    # Resource Optimization Section
+    # Optimization Section
     # ----------------------
     st.subheader("Optimize Beds & Doctors Allocation")
 
@@ -115,6 +120,68 @@ if uploaded_file:
     st.write(f"Optimal Doctors: {doctors.varValue}")
 
     # ----------------------
+    # Deep Learning Section
+    # ----------------------
+    st.subheader("🤖 Deep Learning Admission Prediction")
+
+    if len(df_filtered) >= 50:
+        X_dl = df_filtered[['Age_Scaled', 'Waittime_Scaled', 'Gender_Encoded', 'Department_Encoded']]
+        y_dl = df_filtered['Patient Admission Flag']
+        y_dl_encoded = to_categorical(y_dl)
+
+        X_train, X_test, y_train, y_test = train_test_split(X_dl, y_dl_encoded, test_size=0.2, random_state=42)
+
+        model = Sequential([
+            Dense(16, input_dim=X_dl.shape[1], activation='relu'),
+            Dense(8, activation='relu'),
+            Dense(y_dl_encoded.shape[1], activation='softmax')
+        ])
+
+        model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+        history = model.fit(X_train, y_train, epochs=20, batch_size=8, verbose=0, validation_data=(X_test, y_test))
+
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        st.write(f"Deep Learning Test Accuracy: {acc:.2f}")
+
+        fig_dl = px.line(x=range(1, len(history.history['accuracy'])+1),
+                         y=history.history['accuracy'],
+                         labels={'x':'Epoch', 'y':'Accuracy'},
+                         title="Training Accuracy per Epoch")
+        st.plotly_chart(fig_dl)
+    else:
+        st.write("⚠️ Not enough data for deep learning model (need at least 50 records).")
+
+    # ----------------------
+    # NLP Section
+    # ----------------------
+    st.subheader("💬 NLP: Patient Complaints Analysis")
+
+    if 'Patient Complaint Text' in df.columns:
+        complaints = df['Patient Complaint Text'].fillna("")
+        vectorizer = TfidfVectorizer(stop_words='english', max_features=500)
+        X_text = vectorizer.fit_transform(complaints)
+        y_text = (df['Patient Satisfaction Score'] > 3).astype(int)
+
+        X_train, X_test, y_train, y_test = train_test_split(X_text, y_text, test_size=0.2, random_state=42)
+        nb_model = MultinomialNB()
+        nb_model.fit(X_train, y_train)
+
+        acc_text = nb_model.score(X_test, y_test)
+        st.write(f"NLP Sentiment Classifier Accuracy: {acc_text:.2f}")
+
+        feature_names = np.array(vectorizer.get_feature_names_out())
+        top_words = feature_names[np.argsort(nb_model.coef_[0])[-10:]]
+        st.write("Top Predictive Complaint Words:", ", ".join(top_words))
+
+        complaint_input = st.text_area("Enter Patient Complaint")
+        if complaint_input:
+            complaint_vec = vectorizer.transform([complaint_input])
+            prediction = nb_model.predict(complaint_vec)[0]
+            st.write("Predicted Sentiment:", "😊 Positive" if prediction==1 else "☹️ Negative")
+    else:
+        st.write("⚠️ No complaint text column found in dataset.")
+
+    # ----------------------
     # Satisfaction by Department
     # ----------------------
     st.subheader("Average Satisfaction by Department")
@@ -123,7 +190,7 @@ if uploaded_file:
     st.plotly_chart(fig4)
 
     # ----------------------
-    # Patient Lookup Section
+    # Patient Lookup
     # ----------------------
     st.subheader("Patient Lookup")
     patient_id_input = st.text_input("Enter Patient ID to Lookup")
@@ -158,73 +225,21 @@ if uploaded_file:
     sim_wait = st.slider("Wait Time (minutes)", int(df['Patient Waittime'].min()), int(df['Patient Waittime'].max()), 30)
     sim_dept = st.selectbox("Department", df['Department Referral'].unique())
 
-    # Scale features
     sim_age_scaled = scaler.transform([[sim_age]])[0][0]
     sim_wait_scaled = scaler.transform([[sim_wait]])[0][0]
-    sim_satisfaction_scaled = 0.5  # Assume neutral satisfaction for simulation
+    sim_satisfaction_scaled = 0.5
 
-    # Encode categorical features
     sim_gender_encoded = le_gender.transform([sim_gender])[0]
     sim_dept_encoded = le_dept.transform([sim_dept])[0]
 
-    # Predict cluster
     sim_features_cluster = np.array([[sim_age_scaled, sim_wait_scaled, sim_satisfaction_scaled]])
     sim_cluster = kmeans.predict(sim_features_cluster)[0]
 
     st.write(f"Predicted Cluster: {sim_cluster}")
 
-    # Predict admission probability
     if rf_model:
         sim_features_ml = np.array([[sim_age_scaled, sim_wait_scaled, sim_gender_encoded, sim_dept_encoded]])
         sim_admission_prob = rf_model.predict_proba(sim_features_ml)[0][1]
         st.write(f"Predicted Admission Probability: {sim_admission_prob:.2f}")
     else:
         st.write("Admission model not available (need more data).")
-    # ----------------------
-    # Live What-If Charts
-    # ----------------------
-    st.subheader("📊 Live What-If Charts")
-
-    if rf_model:
-        # 1) Admission Probability vs Age
-        ages = np.linspace(df['Patient Age'].min(), df['Patient Age'].max(), 30).astype(int)
-        probs_age = []
-        for a in ages:
-            a_scaled = scaler.transform([[a]])[0][0]
-            features = np.array([[a_scaled, sim_wait_scaled, sim_gender_encoded, sim_dept_encoded]])
-            probs_age.append(rf_model.predict_proba(features)[0][1])
-        fig_age = px.line(x=ages, y=probs_age, labels={'x':'Age', 'y':'Admission Probability'}, title="Admission Probability vs Age")
-        st.plotly_chart(fig_age)
-
-        # 2) Admission Probability vs Wait Time
-        waits = np.linspace(df['Patient Waittime'].min(), df['Patient Waittime'].max(), 30).astype(int)
-        probs_wait = []
-        for w in waits:
-            w_scaled = scaler.transform([[w]])[0][0]
-            features = np.array([[sim_age_scaled, w_scaled, sim_gender_encoded, sim_dept_encoded]])
-            probs_wait.append(rf_model.predict_proba(features)[0][1])
-        fig_wait = px.line(x=waits, y=probs_wait, labels={'x':'Wait Time (min)', 'y':'Admission Probability'}, title="Admission Probability vs Wait Time")
-        st.plotly_chart(fig_wait)
-
-        # 3) Heatmap: Age vs Wait Time
-        age_grid = np.linspace(df['Patient Age'].min(), df['Patient Age'].max(), 20).astype(int)
-        wait_grid = np.linspace(df['Patient Waittime'].min(), df['Patient Waittime'].max(), 20).astype(int)
-        Z = []
-        for a in age_grid:
-            row = []
-            for w in wait_grid:
-                a_scaled = scaler.transform([[a]])[0][0]
-                w_scaled = scaler.transform([[w]])[0][0]
-                features = np.array([[a_scaled, w_scaled, sim_gender_encoded, sim_dept_encoded]])
-                row.append(rf_model.predict_proba(features)[0][1])
-            Z.append(row)
-        Z = np.array(Z)
-
-        fig_heatmap = px.imshow(Z,
-                                x=wait_grid,
-                                y=age_grid,
-                                labels=dict(x="Wait Time (min)", y="Age", color="Admission Probability"),
-                                title="Admission Probability Heatmap (Age × Wait Time)")
-        st.plotly_chart(fig_heatmap)
-    else:
-        st.write("⚠️ Not enough data for live probability charts.")
